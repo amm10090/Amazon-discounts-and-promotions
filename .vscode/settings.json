@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "/home/devbox/project/Amazon-discounts-and-promotions/venv/bin/python3",
+    "python.analysis.extraPaths": [
+        "/home/devbox/project/Amazon-discounts-and-promotions"
+    ]
+} 
