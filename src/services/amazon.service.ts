@@ -132,7 +132,7 @@ export class AmazonService {
       });
 
       // 创建新的隐身上下文
-      const context = await browser.createBrowserContext();
+      const context = await browser.createIncognitoBrowserContext();
       const page = await context.newPage();
 
       // 设置视窗大小

@@ -51,11 +51,30 @@ document.addEventListener('DOMContentLoaded', () => {
     Prism.highlightAll();
 
     // API测试功能
-    window.testAPI = (type) => {
+    window.testAPI = async (type) => {
         currentApiType = type;
         const config = API_CONFIG[type];
         if (!config) {
             alert('未知的API类型');
+            return;
+        }
+
+        if (type === 'deals') {
+            // 直接获取折扣商品
+            showLoading();
+            try {
+                const response = await fetch('/api/v1/products/deals');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    displayResults(data.data.products);
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('获取折扣商品时发生错误');
+            } finally {
+                hideLoading();
+            }
             return;
         }
 
@@ -116,25 +135,10 @@ document.addEventListener('DOMContentLoaded', () => {
             Object.keys(params).forEach(key => {
                 url = url.replace(`:${key}`, params[key]);
             });
-            
-            // 添加查询参数
-            const queryParams = new URLSearchParams();
-            Object.keys(params).forEach(key => {
-                if (!url.includes(`:${key}`)) {
-                    queryParams.append(key, params[key]);
-                }
-            });
-            
-            if (queryParams.toString()) {
-                url += `?${queryParams.toString()}`;
-            }
 
             // 发送请求
             const response = await fetch(url, {
-                method: config.method,
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+                method: config.method
             });
             
             const data = await response.json();
@@ -211,77 +215,35 @@ document.addEventListener('DOMContentLoaded', () => {
                         <h5 class="card-title text-truncate">${product.title}</h5>
                         <div class="price-info mb-2">
                             <span class="price">${product.price}</span>
-                            ${product.priceDetails?.pricePerUnit ? `
-                                <div class="price-per-unit small text-muted">
-                                    ${product.priceDetails.pricePerUnit}
-                                </div>
-                            ` : ''}
                             ${product.priceDetails?.savings ? `
                                 <span class="savings text-success">
                                     (节省 ${product.priceDetails.savings.displayAmount}${product.priceDetails.savings.percentage ? ` / ${product.priceDetails.savings.percentage}%` : ''})
                                 </span>
                             ` : ''}
-                            ${product.priceDetails?.savingBasis ? `
-                                <div class="saving-basis small text-muted">
-                                    ${product.priceDetails.savingBasis.label}: ${product.priceDetails.savingBasis.displayAmount}
-                                </div>
-                            ` : ''}
-                            ${product.offerSummary ? `
-                                <div class="offer-summary small text-muted">
-                                    ${product.offerSummary.offerCount ? `${product.offerSummary.offerCount}个商家报价` : ''}
-                                    ${product.offerSummary.lowestPrice ? `，最低价: $${product.offerSummary.lowestPrice}` : ''}
-                                </div>
-                            ` : ''}
                         </div>
-                        <div class="product-info small text-muted mb-2">
-                            ${product.merchant ? `
-                                <div class="merchant">
-                                    卖家: ${product.merchant}
-                                    ${product.isPrimeEligible ? '<span class="badge bg-primary ms-2">Prime</span>' : ''}
-                                    ${product.isBuyBoxWinner ? '<span class="badge bg-success ms-1">Best Price</span>' : ''}
-                                    ${product.isAmazonFulfilled ? '<span class="badge bg-info ms-1">亚马逊发货</span>' : ''}
-                                    ${product.isFreeShipping ? '<span class="badge bg-secondary ms-1">免运费</span>' : ''}
-                                </div>
-                            ` : ''}
-                            ${product.condition ? `
-                                <div class="condition">
-                                    商品状态: ${product.condition}
-                                    ${product.conditionNote ? `<span class="text-muted">- ${product.conditionNote}</span>` : ''}
-                                </div>
-                            ` : ''}
-                            ${product.availability ? `
-                                <div class="availability">
-                                    库存状态: ${product.availability.message || product.availability.type || '未知'}
-                                    ${product.availability.maxOrderQuantity ? `<br>最大购买数量: ${product.availability.maxOrderQuantity}` : ''}
-                                </div>
-                            ` : ''}
-                            ${product.programEligibility?.isPrimeExclusive ? `
-                                <div class="program-eligibility">
-                                    <span class="badge bg-warning text-dark">Prime专享</span>
-                                </div>
-                            ` : ''}
-                            ${product.dealDetails ? `
-                                <div class="deal-details mt-2">
-                                    <span class="badge bg-danger">限时特惠</span>
-                                    ${product.dealDetails.percentClaimed ? `
-                                        <div class="progress mt-1" style="height: 5px;">
-                                            <div class="progress-bar bg-danger" 
-                                                 role="progressbar" 
-                                                 style="width: ${product.dealDetails.percentClaimed}%">
-                                            </div>
+                        ${product.dealDetails ? `
+                            <div class="deal-details mt-2">
+                                <span class="badge bg-danger">限时特惠</span>
+                                ${product.dealDetails.percentClaimed ? `
+                                    <div class="progress mt-1" style="height: 5px;">
+                                        <div class="progress-bar bg-danger" 
+                                             role="progressbar" 
+                                             style="width: ${product.dealDetails.percentClaimed}%">
                                         </div>
-                                        <small>已抢购${product.dealDetails.percentClaimed}%</small>
-                                    ` : ''}
-                                </div>
-                            ` : ''}
+                                    </div>
+                                    <small>已抢购${product.dealDetails.percentClaimed}%</small>
+                                ` : ''}
+                            </div>
+                        ` : ''}
+                        <div class="mt-3">
+                            <a href="https://www.amazon.com/dp/${product.asin}" 
+                               class="btn btn-primary btn-sm" 
+                               target="_blank">查看详情</a>
+                            <button class="btn btn-outline-primary btn-sm ms-2"
+                                    onclick="showProductDetails('${product.asin}')">
+                                更多信息
+                            </button>
                         </div>
-                        <a href="${product.url}" 
-                           class="btn btn-primary mt-2" 
-                           target="_blank">查看详情</a>
-                        <button class="btn btn-outline-primary mt-2 ms-2"
-                                onclick="showProductDetails('${product.asin}')">
-                            更多信息
-                        </button>
                     </div>
                 </div>
             </div>
@@ -308,73 +270,17 @@ document.addEventListener('DOMContentLoaded', () => {
                             <h4>${product.title}</h4>
                             <div class="price-info mb-3">
                                 <div class="price h5">${product.price}</div>
-                                ${product.priceDetails?.pricePerUnit ? `
-                                    <div class="price-per-unit text-muted">
-                                        ${product.priceDetails.pricePerUnit}
-                                    </div>
-                                ` : ''}
                                 ${product.priceDetails?.savings ? `
                                     <div class="savings text-success">
                                         节省: ${product.priceDetails.savings.displayAmount}
                                         ${product.priceDetails.savings.percentage ? ` (${product.priceDetails.savings.percentage}%)` : ''}
                                     </div>
                                 ` : ''}
-                                ${product.priceDetails?.savingBasis ? `
-                                    <div class="saving-basis text-muted">
-                                        ${product.priceDetails.savingBasis.label}: ${product.priceDetails.savingBasis.displayAmount}
-                                    </div>
-                                ` : ''}
-                                ${product.offerSummary ? `
-                                    <div class="offer-summary text-muted">
-                                        ${product.offerSummary.offerCount ? `${product.offerSummary.offerCount}个商家报价` : ''}
-                                        ${product.offerSummary.lowestPrice ? `<br>最低价: $${product.offerSummary.lowestPrice}` : ''}
-                                        ${product.offerSummary.highestPrice ? `<br>最高价: $${product.offerSummary.highestPrice}` : ''}
-                                    </div>
-                                ` : ''}
                             </div>
                             <div class="product-details mb-3">
-                                ${product.merchant ? `
-                                    <div class="merchant mb-2">
-                                        <strong>卖家:</strong> ${product.merchant}
-                                        <div class="badges">
-                                            ${product.isPrimeEligible ? '<span class="badge bg-primary me-1">Prime</span>' : ''}
-                                            ${product.isBuyBoxWinner ? '<span class="badge bg-success me-1">Best Price</span>' : ''}
-                                            ${product.isAmazonFulfilled ? '<span class="badge bg-info me-1">亚马逊发货</span>' : ''}
-                                            ${product.isFreeShipping ? '<span class="badge bg-secondary me-1">免运费</span>' : ''}
-                                        </div>
-                                    </div>
-                                ` : ''}
-                                ${product.condition ? `
-                                    <div class="condition mb-2">
-                                        <strong>商品状态:</strong> ${product.condition}
-                                        ${product.conditionNote ? `<br><small class="text-muted">${product.conditionNote}</small>` : ''}
-                                    </div>
-                                ` : ''}
                                 ${product.availability ? `
                                     <div class="availability mb-2">
                                         <strong>库存状态:</strong> ${product.availability.message || product.availability.type || '未知'}
-                                        ${product.availability.maxOrderQuantity ? `<br>最大购买数量: ${product.availability.maxOrderQuantity}` : ''}
-                                        ${product.availability.minOrderQuantity ? `<br>最小购买数量: ${product.availability.minOrderQuantity}` : ''}
-                                    </div>
-                                ` : ''}
-                                ${product.programEligibility ? `
-                                    <div class="program-eligibility mb-2">
-                                        <strong>购买资格:</strong>
-                                        ${product.programEligibility.isPrimeExclusive ? '<br><span class="badge bg-warning text-dark">Prime专享</span>' : ''}
-                                        ${product.programEligibility.isPrimePantry ? '<br><span class="badge bg-info">Prime Pantry</span>' : ''}
-                                    </div>
-                                ` : ''}
-                                ${product.promotions && product.promotions.length > 0 ? `
-                                    <div class="promotions mb-2">
-                                        <strong>促销信息:</strong>
-                                        <ul class="list-unstyled">
-                                            ${product.promotions.map(promo => `
-                                                <li>
-                                                    <span class="badge bg-success">${promo.type}</span>
-                                                    ${promo.description ? ` - ${promo.description}` : ''}
-                                                </li>
-                                            `).join('')}
-                                        </ul>
                                     </div>
                                 ` : ''}
                                 ${product.dealDetails ? `
@@ -382,8 +288,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                         <strong>特惠信息:</strong>
                                         <div class="mt-2">
                                             <span class="badge bg-danger">限时特惠</span>
-                                            ${product.dealDetails.accessType === 'PRIME_EXCLUSIVE' ? '<span class="badge bg-warning text-dark ms-1">Prime专享</span>' : ''}
-                                            ${product.dealDetails.startTime ? `<br>开始时间: ${new Date(product.dealDetails.startTime).toLocaleString()}` : ''}
                                             ${product.dealDetails.endTime ? `<br>结束时间: ${new Date(product.dealDetails.endTime).toLocaleString()}` : ''}
                                             ${product.dealDetails.percentClaimed ? `
                                                 <div class="progress mt-2" style="height: 5px;">
@@ -398,7 +302,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     </div>
                                 ` : ''}
                             </div>
-                            <a href="${product.url}" 
+                            <a href="https://www.amazon.com/dp/${product.asin}" 
                                class="btn btn-primary mt-3" 
                                target="_blank">
                                 在亚马逊上查看
