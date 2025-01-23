@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express';
-import { AmazonService } from '../services/amazon.service';
+import { AmazonService, ProductInfo } from '../services/amazon.service';
 import { AppError } from '../middlewares/error.middleware';
 import { logInfo } from '../utils/logger';
 
@@ -225,13 +225,14 @@ export class ProductController {
     next: NextFunction
   ) => {
     try {
-      // 首先爬取折扣页面获取ASIN列表
       logInfo('Scraping deals page');
-      const asinList = await this.amazonService.scrapeDealsPage();
-
-      // 通过ASIN列表获取商品详情
+      const products = await this.amazonService.scrapeDealsPage();
+      
+      // 提取 ASIN 列表
+      const asinList = products.map(product => product.asin);
+      
       logInfo('Getting items details', { asinCount: asinList.length });
-      const items = await this.amazonService.getItemsByAsins(asinList.slice(0, 10)); // 限制最多10个商品
+      const items = await this.amazonService.getItemsByAsins(asinList.slice(0, 10));
 
       // 格式化返回数据
       const formattedProducts = items.map((item: AmazonServiceResponse) => this.formatProduct(item));
@@ -248,4 +249,24 @@ export class ProductController {
       next(error);
     }
   };
+
+  async getProductsByAsins(asinList: string[]) {
+    try {
+      const items = await this.amazonService.getItemsByAsins(asinList.slice(0, 10)); // 限制最多10个商品
+      return items;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async getProducts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const asinList = await this.amazonService.scrapeDealsPage();
+      const asins = asinList.map(product => product.asin);
+      const items = await this.getProductsByAsins(asins);
+      res.json(items);
+    } catch (error) {
+      next(error);
+    }
+  }
 } 

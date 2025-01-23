@@ -1,39 +1,73 @@
-import { AmazonService } from './services/amazon.service';
-import { logInfo } from './utils/logger';
+import { DealsService } from './services/deals.service';
+import * as fs from 'fs';
+import * as path from 'path';
 
-async function testScrapeDealsPage() {
+async function main() {
   try {
-    const amazonService = new AmazonService();
+    console.log('开始测试 Amazon Deals 页面抓取...');
     
-    logInfo('开始测试爬取 Amazon Deals 页面');
+    // 记录开始时间
+    const startTime = new Date();
+    console.log('开始时间:', startTime.toLocaleString());
+
+    // 执行抓取
+    const result = await DealsService.captureDealsPage();
     
-    // 测试爬取折扣商品ASIN
-    const asinList = await amazonService.scrapeDealsPage();
+    // 记录结束时间
+    const endTime = new Date();
+    const duration = (endTime.getTime() - startTime.getTime()) / 1000;
     
-    logInfo('爬取结果', {
-      totalAsins: asinList.length,
-      firstFiveAsins: asinList.slice(0, 5)
+    console.log('\n测试完成！');
+    console.log('----------------------------------------');
+    console.log(`截图保存在: ${result.screenshotPath}`);
+    console.log(`收集到的ASIN数量: ${result.asins.length}`);
+    console.log(`耗时: ${duration.toFixed(2)}秒`);
+    
+    // 验证结果
+    if (result.asins.length === 0) {
+      throw new Error('未收集到任何ASIN，可能存在问题');
+    }
+
+    // 保存ASIN列表到文件
+    const timestamp = new Date().toISOString().replace(/:/g, '-');
+    const asinFilePath = path.join(process.cwd(), 'data', `asins-${timestamp}.json`);
+    
+    // 确保data目录存在
+    const dataDir = path.join(process.cwd(), 'data');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir);
+    }
+
+    // 创建结果对象
+    const testResult = {
+      timestamp: timestamp,
+      duration: duration,
+      totalAsins: result.asins.length,
+      asins: result.asins,
+      screenshotPath: result.screenshotPath
+    };
+
+    // 写入文件
+    fs.writeFileSync(
+      asinFilePath, 
+      JSON.stringify(testResult, null, 2)
+    );
+
+    console.log(`ASIN列表已保存到: ${asinFilePath}`);
+    console.log('----------------------------------------');
+    
+    // 输出前10个ASIN作为样本
+    console.log('\n前10个ASIN样本:');
+    result.asins.slice(0, 10).forEach((asin, index) => {
+      console.log(`${index + 1}. ${asin}`);
     });
 
-    // 验证结果
-    if (asinList.length > 0) {
-      logInfo('测试成功: 成功获取折扣商品ASIN列表');
-    } else {
-      logInfo('测试失败: 未获取到任何ASIN');
-    }
-
-    // 验证ASIN格式
-    const validAsinFormat = asinList.every(asin => /^[A-Z0-9]{10}$/.test(asin));
-    if (validAsinFormat) {
-      logInfo('测试成功: 所有ASIN格式正确');
-    } else {
-      logInfo('测试失败: 存在格式不正确的ASIN');
-    }
-
   } catch (error) {
-    logInfo('测试失败', { error });
+    console.error('测试过程中发生错误:', error);
+    process.exit(1);
   }
 }
 
-// 运行测试
-testScrapeDealsPage(); 
+// 执行测试
+console.log('Amazon Deals 自动化测试开始...\n');
+main(); 

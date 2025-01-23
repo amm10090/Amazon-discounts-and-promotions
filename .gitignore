@@ -64,3 +64,5 @@ Thumbs.db
 *.seed
 *.pid.lock
 .venv
+data
+screenshots

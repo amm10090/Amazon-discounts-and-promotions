@@ -1,16 +1,26 @@
 import amazonPaapi from 'amazon-paapi';
 import axios from 'axios';
-import * as cheerio from 'cheerio';
 import { logError, logInfo } from '../utils/logger';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { config } from '../config/config';
 import puppeteer from 'puppeteer-extra';
-import type { Browser, Page, HTTPRequest } from 'puppeteer';
+import type { Browser, Page } from 'puppeteer';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import UserAgent from 'user-agents';
 
 // 添加stealth插件
 puppeteer.use(StealthPlugin());
+
+export interface ProductInfo {
+  asin: string;
+  title: string;
+  discount: {
+    type: string;
+    text?: string;
+    price?: string;
+    originalPrice?: string;
+  };
+}
 
 export class AmazonService {
   private commonParameters: any;
@@ -36,8 +46,8 @@ export class AmazonService {
       PartnerTag: config.amazon.associateTag,
       PartnerType: 'Associates',
       Marketplace: 'www.amazon.com', // 根据官方文档，US marketplace 必须包含 www
-      LanguagesOfPreference: ['en_US'], // 添加默认语言
-      CurrencyOfPreference: 'USD', // 添加默认货币
+      LanguagesOfPreference: ['en_US'], // 默认语言
+      CurrencyOfPreference: 'USD', // 默认货币
       ...(config.proxy.enabled && { Agent: this.proxyAgent })
     };
 
@@ -62,197 +72,6 @@ export class AmazonService {
       proxyEnabled: config.proxy.enabled,
       sdkVersion: require('amazon-paapi/package.json').version
     });
-  }
-
-  /**
-   * 获取下一个代理地址
-   */
-  private getNextProxy(): string | undefined {
-    if (!config.proxy.enabled || !config.proxy.list || config.proxy.list.length === 0) {
-      return undefined;
-    }
-    
-    this.currentProxyIndex = (this.currentProxyIndex + 1) % config.proxy.list.length;
-    return config.proxy.list[this.currentProxyIndex];
-  }
-
-  /**
-   * 随机延迟函数
-   */
-  private async randomDelay(min: number = 2000, max: number = 5000): Promise<void> {
-    const delay = Math.floor(Math.random() * (max - min + 1) + min);
-    await new Promise(resolve => setTimeout(resolve, delay));
-  }
-
-  /**
-   * 模拟人类滚动行为
-   */
-  private async autoScroll(page: Page): Promise<void> {
-    await page.evaluate(async () => {
-      await new Promise<void>((resolve) => {
-        let totalHeight = 0;
-        const distance = 100;
-        const timer = setInterval(() => {
-          const scrollHeight = document.documentElement.scrollHeight;
-          window.scrollBy(0, distance);
-          totalHeight += distance;
-
-          if(totalHeight >= scrollHeight){
-            clearInterval(timer);
-            resolve();
-          }
-        }, 100);
-      });
-    });
-  }
-
-  /**
-   * 从Amazon Deals页面爬取折扣商品的ASIN
-   */
-  async scrapeDealsPage(): Promise<string[]> {
-    let browser: Browser | undefined;
-    try {
-      logInfo('启动无头浏览器进行爬取');
-      
-      // 启动浏览器
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-infobars',
-          '--window-position=0,0',
-          '--ignore-certifcate-errors',
-          '--ignore-certifcate-errors-spki-list',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
-          ...(config.proxy.enabled ? [`--proxy-server=${this.getNextProxy()}`] : [])
-        ]
-      });
-
-      // 创建新的隐身上下文
-      const context = await browser.createIncognitoBrowserContext();
-      const page = await context.newPage();
-
-      // 设置视窗大小
-      await page.setViewport({
-        width: 1920,
-        height: 1080
-      });
-
-      // 设置随机桌面版User-Agent
-      const userAgent = new UserAgent({ deviceCategory: 'desktop' });
-      await page.setUserAgent(userAgent.toString());
-
-      // 拦截不必要的资源
-      await page.setRequestInterception(true);
-      page.on('request', (request: HTTPRequest) => {
-        const resourceType = request.resourceType();
-        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-          request.abort();
-        } else {
-          request.continue();
-        }
-      });
-
-      // 注入反检测脚本
-      await page.evaluateOnNewDocument(() => {
-        // 隐藏webdriver
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined
-        });
-
-        // 模拟正常的插件数量
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => new Array(3).fill(null)
-        });
-
-        // 模拟正常的语言
-        Object.defineProperty(navigator, 'languages', {
-          get: () => ['en-US', 'en']
-        });
-      });
-
-      logInfo('正在访问Amazon Deals页面');
-      await page.goto('https://www.amazon.com/deals', {
-        waitUntil: 'networkidle0',
-        timeout: 30000
-      });
-
-      // 等待页面加载完成
-      await page.waitForSelector('.a-section');
-      
-      // 模拟人类滚动
-      await this.autoScroll(page);
-
-      // 等待更多商品加载
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // 尝试多个选择器来提取ASIN
-      const asinList: string[] = await page.evaluate(() => {
-        const asins: string[] = [];
-        
-        // 方法1: 通过data-testid属性
-        document.querySelectorAll('[data-testid]').forEach(el => {
-          const asin = el.getAttribute('data-testid');
-          if (asin && /^B0[A-Z0-9]{8,9}$/.test(asin)) {
-            asins.push(asin);
-          }
-        });
-
-        // 方法2: 通过data-asin属性
-        document.querySelectorAll('[data-asin]').forEach(el => {
-          const asin = el.getAttribute('data-asin');
-          if (asin && /^B0[A-Z0-9]{8,9}$/.test(asin)) {
-            asins.push(asin);
-          }
-        });
-
-        // 方法3: 通过商品链接
-        document.querySelectorAll('a[href*="/dp/"]').forEach(el => {
-          const href = el.getAttribute('href');
-          if (href) {
-            const match = href.match(/\/dp\/([A-Z0-9]{10})/);
-            if (match && match[1]) {
-              asins.push(match[1]);
-            }
-          }
-        });
-
-        return [...new Set(asins)]; // 去重
-      });
-
-      if (asinList.length === 0) {
-        logInfo('使用备用方法获取ASIN');
-        // 备用方法：直接获取页面内容并解析
-        const content = await page.content();
-        const asinMatches = content.match(/(?:data-asin="|\/dp\/)([A-Z0-9]{10})/g) || [];
-        asinMatches.forEach(match => {
-          const asin = match.replace(/data-asin="|\/dp\//, '');
-          if (/^B0[A-Z0-9]{8,9}$/.test(asin)) {
-            asinList.push(asin);
-          }
-        });
-      }
-
-      // 随机延迟
-      await this.randomDelay();
-
-      // 去重并返回结果
-      const uniqueAsins = [...new Set(asinList)];
-      
-      logInfo(`成功获取到${uniqueAsins.length}个商品ASIN`, { asins: uniqueAsins });
-      return uniqueAsins;
-
-    } catch (error) {
-      logError('爬取Deals页面时发生错误', { error });
-      throw error;
-    } finally {
-      if (browser) {
-        await browser.close();
-      }
-    }
   }
 
   /**
@@ -546,5 +365,9 @@ export class AmazonService {
       });
       throw error;
     }
+  }
+
+  private isValidAsin(asin: string): boolean {
+    return /^B0[A-Z0-9]{8,9}$/.test(asin);
   }
 } 
