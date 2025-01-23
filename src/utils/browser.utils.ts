@@ -1,5 +1,5 @@
 import puppeteer, { Browser, Page } from 'puppeteer';
-import { browserConfig, pageConfig, userAgentConfig } from '../config/browser.config';
+import { browserConfig, pageConfig, userAgentConfig } from '../config/browser.config.js';
 
 export class BrowserUtils {
   private static browser: Browser | null = null;

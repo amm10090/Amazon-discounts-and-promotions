@@ -1,16 +1,32 @@
 import { Page } from 'puppeteer';
-import { BrowserUtils } from '../utils/browser.utils';
-import * as fs from 'fs';
-import * as path from 'path';
+import { BrowserUtils } from '../utils/browser.utils.js';
+import { Logger } from '../utils/logger.utils.js';
+import fs from 'fs';
+import { join } from 'path';
 
 interface ProductInfo {
   asin: string;
   index: number;
 }
 
+interface ScrollMetrics {
+  viewportHeight: number;
+  pageHeight: number;
+  scrollTop: number;
+  visibleProducts: number;
+}
+
 export class DealsService {
   private static readonly AMAZON_DEALS_URL = 'https://www.amazon.com/deals';
-  private static MAX_PRODUCTS = 200; // 移除readonly，允许通过方法修改
+  private static MAX_PRODUCTS = 200;
+  private static readonly SCROLL_CONFIG = {
+    MIN_STEP: 300,
+    MAX_STEP: 800,
+    INITIAL_DELAY: 2000,
+    SCROLL_DELAY: 1500,
+    LOAD_DELAY: 3000,
+    SMOOTH_SCROLL_DURATION: 1000
+  };
   private static readonly SELECTORS = {
     LOAD_MORE_FOOTER: '[data-testid="load-more-footer"]',
     LOAD_MORE_BUTTON: '[data-testid="load-more-view-more-button"]',
@@ -93,89 +109,160 @@ export class DealsService {
   }
 
   /**
+   * 获取页面滚动指标
+   */
+  private static async getScrollMetrics(page: Page): Promise<ScrollMetrics> {
+    return await page.evaluate(() => {
+      return {
+        viewportHeight: window.innerHeight,
+        pageHeight: document.documentElement.scrollHeight,
+        scrollTop: window.scrollY,
+        visibleProducts: document.querySelectorAll('[data-testid="product-card"]').length
+      };
+    });
+  }
+
+  /**
+   * 计算最优滚动步长
+   */
+  private static calculateScrollStep(
+    metrics: ScrollMetrics,
+    newAsinCount: number,
+    isFirstScroll: boolean
+  ): number {
+    // 基础步长基于视口高度
+    let baseStep = metrics.viewportHeight * 0.6;
+    
+    // 根据新ASIN数量调整
+    if (newAsinCount === 0) {
+      // 如果没有新ASIN，增加步长
+      baseStep *= 1.2;
+    } else if (newAsinCount > 8) {
+      // 如果发现很多新ASIN，减小步长以确保不会遗漏
+      baseStep *= 0.6;
+    }
+
+    // 首次滚动使用更保守的步长
+    if (isFirstScroll) {
+      baseStep *= 0.7;
+    }
+
+    // 确保步长在合理范围内
+    return Math.max(
+      Math.min(baseStep, this.SCROLL_CONFIG.MAX_STEP),
+      this.SCROLL_CONFIG.MIN_STEP
+    );
+  }
+
+  /**
+   * 执行平滑滚动
+   */
+  private static async smoothScroll(page: Page, scrollStep: number): Promise<void> {
+    await page.evaluate(
+      ({ step, duration }) => {
+        return new Promise<void>((resolve) => {
+          const startPosition = window.scrollY;
+          const startTime = performance.now();
+          
+          function easeInOutQuad(t: number): number {
+            return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+          }
+
+          function animate(currentTime: number) {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            
+            const easedProgress = easeInOutQuad(progress);
+            const newPosition = startPosition + step * easedProgress;
+            
+            window.scrollTo(0, newPosition);
+
+            if (progress < 1) {
+              requestAnimationFrame(animate);
+            } else {
+              resolve();
+            }
+          }
+
+          requestAnimationFrame(animate);
+        });
+      },
+      { 
+        step: scrollStep, 
+        duration: this.SCROLL_CONFIG.SMOOTH_SCROLL_DURATION 
+      }
+    );
+  }
+
+  /**
    * 自动滚动并收集产品ASIN
    */
   private static async autoScrollAndCollectAsins(page: Page): Promise<Set<string>> {
     const MAX_SCROLL_ATTEMPTS = 50;
     let scrollAttempts = 0;
     let lastHeight = 0;
-    const INITIAL_SCROLL_STEP = 400; // 首次滚动步长更小
-    const NORMAL_SCROLL_STEP = 600; // 正常滚动步长
     const collectedAsins = new Set<string>();
     let lastAsinCount = 0;
     let noNewAsinCount = 0;
     const MAX_NO_NEW_ASIN_ATTEMPTS = 3;
-    let isFirstScroll = true; // 标记是否为首次滚动
+    let isFirstScroll = true;
     
-    // 首次加载后等待更长时间
-    console.log('等待页面初始内容完全加载...');
-    await page.waitForTimeout(3000);
+    // 初始等待
+    await BrowserUtils.delay(this.SCROLL_CONFIG.INITIAL_DELAY);
     
     while (scrollAttempts < MAX_SCROLL_ATTEMPTS) {
-      // 检查是否达到目标数量
       if (collectedAsins.size >= this.MAX_PRODUCTS) {
-        console.log(`已达到目标商品数量 ${this.MAX_PRODUCTS}，停止收集`);
+        Logger.success(`已达到目标商品数量 ${this.MAX_PRODUCTS}，停止收集`);
         break;
       }
 
-      // 获取当前可见的产品信息
+      // 获取当前可见产品
       const products = await this.getVisibleProductsInfo(page);
       const currentAsins = new Set(products.map(p => p.asin));
-      
-      // 计算新收集到的ASIN数量
       const newAsins = [...currentAsins].filter(asin => !collectedAsins.has(asin));
       
-      // 将新的ASIN添加到收集集合中
       newAsins.forEach(asin => collectedAsins.add(asin));
       
-      // 如果这次没有新的ASIN，可能需要滚动或者点击加载更多
+      // 获取滚动指标
+      const metrics = await this.getScrollMetrics(page);
+      
       if (newAsins.length === 0) {
         noNewAsinCount++;
-        console.log(`连续 ${noNewAsinCount} 次没有发现新的ASIN`);
+        Logger.debug(`连续 ${noNewAsinCount} 次没有发现新的ASIN`);
         
         if (noNewAsinCount >= MAX_NO_NEW_ASIN_ATTEMPTS) {
-          console.log(`连续 ${MAX_NO_NEW_ASIN_ATTEMPTS} 次没有新ASIN，可能已到达有效内容底部`);
+          Logger.warning(`连续 ${MAX_NO_NEW_ASIN_ATTEMPTS} 次没有新ASIN，可能已到达有效内容底部`);
           break;
         }
 
-        // 检查是否到达"View more deals"按钮
+        // 检查"加载更多"按钮
         const viewMoreButton = await page.$(this.SELECTORS.LOAD_MORE_BUTTON);
         if (viewMoreButton) {
-          console.log('已到达"View more deals"按钮，尝试点击加载更多...');
+          Logger.info('发现"加载更多"按钮，尝试点击...');
           try {
             await viewMoreButton.click();
-            // 点击加载更多后等待更长时间
-            await page.waitForTimeout(3000);
+            await BrowserUtils.delay(this.SCROLL_CONFIG.LOAD_DELAY);
             noNewAsinCount = 0;
             continue;
           } catch (error) {
-            console.log('点击加载更多按钮失败:', error);
+            Logger.error('点击加载更多按钮失败');
             break;
           }
         }
 
-        // 执行滚动
-        console.log(`当前视口无新产品，执行${isFirstScroll ? '首次' : ''}滚动...`);
-        const scrollStep = isFirstScroll ? INITIAL_SCROLL_STEP : NORMAL_SCROLL_STEP;
+        // 计算并执行滚动
+        const scrollStep = this.calculateScrollStep(metrics, newAsins.length, isFirstScroll);
+        Logger.debug(`当前视口无新产品，执行${isFirstScroll ? '首次' : ''}平滑滚动 (${scrollStep}px)...`);
         
-        // 使用平滑滚动
-        await page.evaluate((step) => {
-          window.scrollBy({
-            top: step,
-            behavior: 'smooth'
-          });
-        }, scrollStep);
-
-        // 首次滚动后等待更长时间
-        await page.waitForTimeout(isFirstScroll ? 2500 : 1500);
-        isFirstScroll = false;
-
-        // 检查高度变化
+        await this.smoothScroll(page, scrollStep);
+        await BrowserUtils.delay(isFirstScroll ? this.SCROLL_CONFIG.INITIAL_DELAY : this.SCROLL_CONFIG.SCROLL_DELAY);
+        
+        // 检查滚动后的页面状态
         const currentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
         if (currentHeight === lastHeight) {
           const spinner = await page.$(this.SELECTORS.LOAD_MORE_SPINNER);
           if (!spinner) {
-            console.log('页面高度未变化且无加载动画，可能已到达底部');
+            Logger.warning('页面高度未变化且无加载动画，可能已到达底部');
             const finalProducts = await this.getVisibleProductsInfo(page);
             finalProducts.forEach(p => collectedAsins.add(p.asin));
             break;
@@ -184,37 +271,27 @@ export class DealsService {
         lastHeight = currentHeight;
         scrollAttempts++;
       } else {
-        // 有新的ASIN被收集到
-        console.log(`本次收集到 ${newAsins.length} 个新ASIN，当前总数: ${collectedAsins.size}/${this.MAX_PRODUCTS}`);
+        Logger.progress(collectedAsins.size, this.MAX_PRODUCTS, `本次收集到 ${newAsins.length} 个新ASIN`);
         noNewAsinCount = 0;
         
-        // 如果连续两次收集到的总数相同，说明可能需要滚动了
         if (collectedAsins.size === lastAsinCount) {
-          console.log('连续两次收集数量相同，准备滚动...');
-          const scrollStep = isFirstScroll ? INITIAL_SCROLL_STEP : NORMAL_SCROLL_STEP;
+          const scrollStep = this.calculateScrollStep(metrics, newAsins.length, isFirstScroll);
+          Logger.debug(`收集数量未增加，尝试平滑滚动 (${scrollStep}px)...`);
           
-          // 使用平滑滚动
-          await page.evaluate((step) => {
-            window.scrollBy({
-              top: step,
-              behavior: 'smooth'
-            });
-          }, scrollStep);
-          
-          await page.waitForTimeout(isFirstScroll ? 2500 : 1500);
-          isFirstScroll = false;
+          await this.smoothScroll(page, scrollStep);
+          await BrowserUtils.delay(isFirstScroll ? this.SCROLL_CONFIG.INITIAL_DELAY : this.SCROLL_CONFIG.SCROLL_DELAY);
         }
         
         lastAsinCount = collectedAsins.size;
       }
 
-      // 获取并显示当前进度
       const padding = await this.getListContainerPadding(page);
-      console.log(`列表容器padding - 上: ${padding.top}px, 下: ${padding.bottom}px`);
+      Logger.debug(`列表容器padding - 上: ${padding.top}px, 下: ${padding.bottom}px`);
+      isFirstScroll = false;
     }
 
     if (scrollAttempts >= MAX_SCROLL_ATTEMPTS) {
-      console.log('达到最大滚动次数限制');
+      Logger.warning('达到最大滚动次数限制');
     }
 
     return collectedAsins;
@@ -224,7 +301,7 @@ export class DealsService {
    * 等待页面加载完成
    */
   private static async waitForPageLoad(page: Page): Promise<void> {
-    console.log('等待页面加载...');
+    Logger.info('等待页面加载...');
     
     try {
       // 等待页面的核心内容加载
@@ -241,9 +318,9 @@ export class DealsService {
         throw new Error('被亚马逊反爬虫系统检测');
       }
 
-      console.log('页面核心内容已加载完成');
+      Logger.success('页面核心内容已加载完成');
     } catch (error: any) {
-      console.error('页面加载出现异常:', error.message);
+      Logger.error(`页面加载出现异常: ${error.message}`);
       throw error;
     }
   }
@@ -267,12 +344,12 @@ export class DealsService {
         };
       }, this.SELECTORS);
 
-      console.log(`当前页面高度: ${height}px, 产品数量: ${productCount}`);
+      Logger.debug(`当前页面高度: ${height}px, 产品数量: ${productCount}`);
 
       // 检查是否到达"View more deals"按钮
       const viewMoreButton = await page.$(this.SELECTORS.LOAD_MORE_BUTTON);
       if (viewMoreButton) {
-        console.log('已到达"View more deals"按钮');
+        Logger.info('已到达"View more deals"按钮');
         break;
       }
 
@@ -280,7 +357,7 @@ export class DealsService {
       if (height === lastHeight) {
         const spinner = await page.$(this.SELECTORS.LOAD_MORE_SPINNER);
         if (!spinner) {
-          console.log('页面高度未变化且无加载动画,可能已到达底部');
+          Logger.warning('页面高度未变化且无加载动画,可能已到达底部');
           break;
         }
       }
@@ -314,7 +391,7 @@ export class DealsService {
             beforeScrollProducts
           )
         ]).catch(() => {
-          console.log('未检测到页面更新');
+          Logger.info('未检测到页面更新');
           scrollAttempts++;
         });
 
@@ -322,7 +399,7 @@ export class DealsService {
         await page.waitForTimeout(500);
 
       } catch (error: any) {
-        console.log('本次滚动加载出现异常:', error.message);
+        Logger.error(`本次滚动加载出现异常: ${error.message}`);
         scrollAttempts++;
       }
 
@@ -331,7 +408,7 @@ export class DealsService {
     }
 
     if (scrollAttempts >= MAX_SCROLL_ATTEMPTS) {
-      console.log('达到最大滚动次数限制');
+      Logger.warning('达到最大滚动次数限制');
     }
   }
 
@@ -339,47 +416,53 @@ export class DealsService {
    * 加载Amazon Deals页面并截图
    */
   static async captureDealsPage(maxProducts?: number): Promise<{screenshotPath: string; asins: string[]}> {
+    const startTime = Date.now();
     if (maxProducts) {
       this.setMaxProducts(maxProducts);
     }
     
-    console.log(`开始加载Amazon Deals页面，目标商品数量: ${this.MAX_PRODUCTS}`);
+    Logger.info(`开始加载Amazon Deals页面，目标商品数量: ${this.MAX_PRODUCTS}`);
     const page = await BrowserUtils.createPage();
 
     try {
-      // 访问页面
-      console.log('正在访问页面:', this.AMAZON_DEALS_URL);
+      Logger.info(`正在访问页面: ${this.AMAZON_DEALS_URL}`);
       await page.goto(this.AMAZON_DEALS_URL);
 
-      // 等待页面加载完成
+      Logger.info('等待页面加载...');
       await this.waitForPageLoad(page);
+      Logger.success('页面核心内容已加载完成');
 
-      // 自动滚动加载更多内容并收集ASIN
-      console.log('开始自动滚动加载更多内容并收集ASIN...');
+      Logger.info('开始自动滚动加载更多内容并收集ASIN...');
+      Logger.debug('等待页面初始内容完全加载...');
       const collectedAsins = await this.autoScrollAndCollectAsins(page);
       
-      // 最后等待一段时间确保所有内容都已加载
       await BrowserUtils.delay(5000);
 
       // 创建screenshots目录
-      const screenshotsDir = path.join(process.cwd(), 'screenshots');
+      const screenshotsDir = join(process.cwd(), 'screenshots');
       if (!fs.existsSync(screenshotsDir)) {
         fs.mkdirSync(screenshotsDir);
       }
 
-      // 生成文件名
       const timestamp = new Date().toISOString().replace(/:/g, '-');
-      const screenshotPath = path.join(screenshotsDir, `amazon-deals-${timestamp}.png`);
+      const screenshotPath = join(screenshotsDir, `amazon-deals-${timestamp}.png`);
 
-      // 截取页面截图
-      console.log('正在截取页面...');
+      Logger.info('正在截取页面...');
       await page.screenshot({
         path: screenshotPath,
         fullPage: true
       });
 
-      console.log('截图已保存至:', screenshotPath);
-      console.log('总共收集到的ASIN数量:', collectedAsins.size);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      
+      Logger.summary('采集结果', {
+        '截图保存路径': screenshotPath,
+        '收集到的ASIN数量': collectedAsins.size,
+        '耗时': `${duration}秒`,
+        '平均采集速度': `${(collectedAsins.size / parseFloat(duration)).toFixed(2)} 个/秒`
+      });
+
+      Logger.asinSample(Array.from(collectedAsins));
       
       return {
         screenshotPath,
@@ -387,7 +470,7 @@ export class DealsService {
       };
 
     } catch (error) {
-      console.error('页面加载或截图过程中出错:', error);
+      Logger.error(`页面加载或截图过程中出错: ${error}`);
       throw error;
     } finally {
       await BrowserUtils.closeBrowser();
