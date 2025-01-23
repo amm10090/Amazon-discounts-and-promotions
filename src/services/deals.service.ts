@@ -25,7 +25,16 @@ export class DealsService {
     INITIAL_DELAY: 2000,
     SCROLL_DELAY: 1500,
     LOAD_DELAY: 3000,
-    SMOOTH_SCROLL_DURATION: 1000
+    SMOOTH_SCROLL_DURATION: 1000,
+    RANDOM_DELAY: {
+      MIN: 800,
+      MAX: 2000
+    },
+    PAUSE_PROBABILITY: 0.3,
+    PAUSE_DURATION: {
+      MIN: 500,
+      MAX: 1500
+    }
   };
   private static readonly SELECTORS = {
     LOAD_MORE_FOOTER: '[data-testid="load-more-footer"]',
@@ -136,7 +145,7 @@ export class DealsService {
     // 根据新ASIN数量调整
     if (newAsinCount === 0) {
       // 如果没有新ASIN，增加步长
-      baseStep *= 1.2;
+      baseStep *= 1.1;
     } else if (newAsinCount > 8) {
       // 如果发现很多新ASIN，减小步长以确保不会遗漏
       baseStep *= 0.6;
@@ -155,24 +164,44 @@ export class DealsService {
   }
 
   /**
+   * 获取随机等待时间
+   */
+  private static getRandomDelay(min: number, max: number): number {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  /**
    * 执行平滑滚动
    */
   private static async smoothScroll(page: Page, scrollStep: number): Promise<void> {
+    // 随机决定是否在滚动前暂停
+    if (Math.random() < this.SCROLL_CONFIG.PAUSE_PROBABILITY) {
+      const pauseDuration = this.getRandomDelay(
+        this.SCROLL_CONFIG.PAUSE_DURATION.MIN,
+        this.SCROLL_CONFIG.PAUSE_DURATION.MAX
+      );
+      Logger.debug(`随机暂停 ${pauseDuration}ms...`);
+      await BrowserUtils.delay(pauseDuration);
+    }
+
     await page.evaluate(
       ({ step, duration }) => {
         return new Promise<void>((resolve) => {
           const startPosition = window.scrollY;
           const startTime = performance.now();
           
-          function easeInOutQuad(t: number): number {
-            return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+          // 使用更自然的缓动函数
+          function easeInOutCubic(t: number): number {
+            return t < 0.5
+              ? 4 * t * t * t
+              : 1 - Math.pow(-2 * t + 2, 3) / 2;
           }
 
           function animate(currentTime: number) {
             const elapsed = currentTime - startTime;
             const progress = Math.min(elapsed / duration, 1);
             
-            const easedProgress = easeInOutQuad(progress);
+            const easedProgress = easeInOutCubic(progress);
             const newPosition = startPosition + step * easedProgress;
             
             window.scrollTo(0, newPosition);
@@ -189,9 +218,17 @@ export class DealsService {
       },
       { 
         step: scrollStep, 
-        duration: this.SCROLL_CONFIG.SMOOTH_SCROLL_DURATION 
+        duration: this.SCROLL_CONFIG.SMOOTH_SCROLL_DURATION + this.getRandomDelay(-200, 200) // 添加随机持续时间
       }
     );
+
+    // 滚动后添加随机等待时间
+    const randomDelay = this.getRandomDelay(
+      this.SCROLL_CONFIG.RANDOM_DELAY.MIN,
+      this.SCROLL_CONFIG.RANDOM_DELAY.MAX
+    );
+    Logger.debug(`滚动后等待 ${randomDelay}ms...`);
+    await BrowserUtils.delay(randomDelay);
   }
 
   /**
@@ -255,7 +292,13 @@ export class DealsService {
         Logger.debug(`当前视口无新产品，执行${isFirstScroll ? '首次' : ''}平滑滚动 (${scrollStep}px)...`);
         
         await this.smoothScroll(page, scrollStep);
-        await BrowserUtils.delay(isFirstScroll ? this.SCROLL_CONFIG.INITIAL_DELAY : this.SCROLL_CONFIG.SCROLL_DELAY);
+        
+        // 使用随机等待时间
+        const waitTime = isFirstScroll 
+          ? this.SCROLL_CONFIG.INITIAL_DELAY 
+          : this.getRandomDelay(this.SCROLL_CONFIG.RANDOM_DELAY.MIN, this.SCROLL_CONFIG.RANDOM_DELAY.MAX);
+        
+        await BrowserUtils.delay(waitTime);
         
         // 检查滚动后的页面状态
         const currentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -279,7 +322,13 @@ export class DealsService {
           Logger.debug(`收集数量未增加，尝试平滑滚动 (${scrollStep}px)...`);
           
           await this.smoothScroll(page, scrollStep);
-          await BrowserUtils.delay(isFirstScroll ? this.SCROLL_CONFIG.INITIAL_DELAY : this.SCROLL_CONFIG.SCROLL_DELAY);
+          
+          // 使用随机等待时间
+          const waitTime = isFirstScroll 
+            ? this.SCROLL_CONFIG.INITIAL_DELAY 
+            : this.getRandomDelay(this.SCROLL_CONFIG.RANDOM_DELAY.MIN, this.SCROLL_CONFIG.RANDOM_DELAY.MAX);
+          
+          await BrowserUtils.delay(waitTime);
         }
         
         lastAsinCount = collectedAsins.size;
