@@ -22,6 +22,43 @@ export interface ProductInfo {
   };
 }
 
+export interface SearchItemsParams {
+  keywords?: string;
+  actor?: string;
+  artist?: string;
+  author?: string;
+  brand?: string;
+  title?: string;
+  searchIndex?: string;
+  sortBy?: 'AvgCustomerReviews' | 'Featured' | 'NewestArrivals' | 'Price:HighToLow' | 'Price:LowToHigh' | 'Relevance';
+  minPrice?: number;
+  maxPrice?: number;
+  minReviewsRating?: number;
+  itemPage?: number;
+  itemCount?: number;
+  condition?: 'Any' | 'New' | 'Used' | 'Collectible' | 'Refurbished';
+  deliveryFlags?: string[];
+  availability?: 'Available' | 'IncludeOutOfStock';
+  browseNodeId?: string;
+  dealsOnly?: boolean;
+  minSavingsPercent?: number;
+  hasCoupons?: boolean;
+  Resources?: string[];
+}
+
+/**
+ * 搜索折扣商品的参数接口
+ */
+export interface DiscountSearchParams {
+  searchIndex?: string;  // 搜索分类
+  minSavingsPercent?: number;  // 最小折扣比例
+  dealTypes?: ('DealOfTheDay' | 'Lightning' | 'Promotion')[];  // 折扣类型
+  maxPrice?: number;  // 最高价格
+  sortBy?: 'AvgCustomerReviews' | 'Featured' | 'NewestArrivals' | 'Price:HighToLow' | 'Price:LowToHigh' | 'Relevance';
+  itemCount?: number;  // 返回商品数量
+  itemPage?: number;   // 分页
+}
+
 export class AmazonService {
   private commonParameters: any;
   private proxyAgent: HttpsProxyAgent<string> | undefined;
@@ -369,5 +406,265 @@ export class AmazonService {
 
   private isValidAsin(asin: string): boolean {
     return /^B0[A-Z0-9]{8,9}$/.test(asin);
+  }
+
+  /**
+   * 搜索折扣商品
+   * 专门用于搜索带有折扣或优惠券的商品
+   */
+  async searchDiscountedItems(params: DiscountSearchParams = {}) {
+    // 构建基础搜索参数
+    const searchParams: SearchItemsParams = {
+      availability: 'Available',  // 只搜索有货商品
+      condition: 'New',  // 只搜索新品
+      minSavingsPercent: params.minSavingsPercent || 5,  // 默认最少5%折扣
+      itemCount: params.itemCount || 10,
+      itemPage: params.itemPage || 1,
+      sortBy: params.sortBy || 'Featured',
+      searchIndex: params.searchIndex,
+      maxPrice: params.maxPrice,
+      deliveryFlags: [
+        ...(params.dealTypes || []),  // 添加指定的折扣类型
+        'Prime'  // 默认包含 Prime 商品
+      ]
+    };
+
+    // 使用 Deals 分类的 browseNodeId
+    if (!params.searchIndex) {
+      // 使用 Deals & Promotions 分类
+      searchParams.browseNodeId = "17276797011";  // Amazon US Deals 分类
+      
+      // 如果没有指定其他搜索条件，添加一个空的关键词以触发搜索
+      if (!searchParams.keywords) {
+        searchParams.keywords = "deals";
+      }
+    }
+
+    return this.searchItems({
+      ...searchParams,
+      Resources: [
+        'ItemInfo.Title',
+        'ItemInfo.Features',
+        'ItemInfo.ProductInfo',
+        'Images.Primary.Medium',
+        'Offers.Listings.Price',
+        'Offers.Listings.SavingBasis',
+        'Offers.Listings.Promotions',
+        'Offers.Listings.Condition',
+        'Offers.Listings.DeliveryInfo.IsPrimeEligible',
+        'Offers.Summaries.LowestPrice',
+        'Offers.Summaries.HighestPrice',
+        'Offers.Summaries.OfferCount',
+        'OffersV2.Listings.Availability',
+        'OffersV2.Listings.Price',
+        'OffersV2.Listings.SavingBasis',
+        'OffersV2.Listings.Promotions',
+        'OffersV2.Listings.DealDetails',
+        'SearchRefinements'
+      ]
+    });
+  }
+
+  /**
+   * 搜索商品
+   * @param params 搜索参数
+   * @returns 搜索结果
+   */
+  async searchItems(params: SearchItemsParams) {
+    try {
+      // 验证至少有一个搜索条件
+      const hasSearchCriteria = !!(
+        params.keywords ||
+        params.actor ||
+        params.artist ||
+        params.author ||
+        params.brand ||
+        params.title ||
+        params.dealsOnly
+      );
+
+      if (!hasSearchCriteria) {
+        throw new Error('必须提供至少一个搜索条件(keywords, actor, artist, author, brand, title) 或指定只搜索折扣商品');
+      }
+
+      // 构建请求参数
+      const requestParameters = {
+        ...this.commonParameters,
+        ItemCount: params.itemCount || 10,
+        ItemPage: params.itemPage || 1,
+        Resources: [
+          'ItemInfo.Title',
+          'ItemInfo.Features',
+          'ItemInfo.ProductInfo',
+          'Images.Primary.Medium',
+          'Offers.Listings.Price',
+          'Offers.Listings.SavingBasis',
+          'Offers.Listings.Promotions',
+          'Offers.Listings.DeliveryInfo.IsPrimeEligible',
+          'Offers.Summaries.LowestPrice',
+          'Offers.Summaries.HighestPrice',
+          'Offers.Summaries.OfferCount',
+          'OffersV2.Listings.DealDetails',
+          'SearchRefinements'
+        ],
+        ...(params.keywords && { Keywords: params.keywords }),
+        ...(params.actor && { Actor: params.actor }),
+        ...(params.artist && { Artist: params.artist }),
+        ...(params.author && { Author: params.author }),
+        ...(params.brand && { Brand: params.brand }),
+        ...(params.title && { Title: params.title }),
+        ...(params.searchIndex && { SearchIndex: params.searchIndex }),
+        ...(params.sortBy && { SortBy: params.sortBy }),
+        ...(params.minPrice && { MinPrice: params.minPrice }),
+        ...(params.maxPrice && { MaxPrice: params.maxPrice }),
+        ...(params.minReviewsRating && { MinReviewsRating: params.minReviewsRating }),
+        ...(params.condition && { Condition: params.condition }),
+        ...(params.deliveryFlags && { DeliveryFlags: params.deliveryFlags }),
+        ...(params.availability && { Availability: params.availability }),
+        ...(params.browseNodeId && { BrowseNodeId: params.browseNodeId }),
+        ...(params.dealsOnly && { 
+          Availability: 'Available',
+          Condition: 'New',
+          MinSavingsPercent: params.minSavingsPercent || 5
+        })
+      };
+
+      // 使用带重试机制的API调用
+      const response = await this.retryableSearchItems(requestParameters);
+
+      // 验证响应数据
+      if (!response?.SearchResult) {
+        throw new Error('API 返回数据格式错误');
+      }
+
+      // 返回格式化后的搜索结果
+      return {
+        totalResults: response.SearchResult.TotalResultCount,
+        searchUrl: response.SearchResult.SearchURL,
+        items: response.SearchResult.Items?.map((item: any) => {
+          const listing = item.Offers?.Listings?.[0] || item.OffersV2?.Listings?.[0];
+          const offerSummary = item.Offers?.Summaries?.[0];
+          const dealDetails = listing?.DealDetails;
+          
+          // 计算折扣信息
+          const savings = listing?.Price?.Savings || {};
+          const savingBasis = listing?.SavingBasis;
+          const promotions = listing?.Promotions || [];
+          
+          return {
+            asin: item.ASIN,
+            title: item.ItemInfo?.Title?.DisplayValue,
+            image: item.Images?.Primary?.Medium?.URL,
+            price: listing?.Price?.DisplayAmount,
+            priceDetails: listing?.Price ? {
+              amount: listing.Price.Amount,
+              currency: listing.Price.Currency,
+              displayAmount: listing.Price.DisplayAmount,
+              savings: savings ? {
+                amount: savings.Amount,
+                percentage: savings.Percentage,
+                displayAmount: savings.DisplayAmount
+              } : undefined,
+              originalPrice: savingBasis ? {
+                amount: savingBasis.Amount,
+                displayAmount: savingBasis.DisplayAmount
+              } : undefined
+            } : undefined,
+            dealInfo: dealDetails ? {
+              type: dealDetails.Type,
+              startTime: dealDetails.StartTime,
+              endTime: dealDetails.EndTime,
+              percentClaimed: dealDetails.PercentClaimed
+            } : undefined,
+            promotions: promotions.map((promo: any) => ({
+              type: promo.Type,
+              displayAmount: promo.Amount?.DisplayAmount,
+              discountPercent: promo.DiscountPercent,
+              description: promo.Description
+            })),
+            isPrimeEligible: listing?.DeliveryInfo?.IsPrimeEligible,
+            offerSummary: offerSummary ? {
+              lowestPrice: offerSummary.LowestPrice?.DisplayAmount,
+              highestPrice: offerSummary.HighestPrice?.DisplayAmount,
+              offerCount: offerSummary.OfferCount
+            } : undefined,
+            features: item.ItemInfo?.Features?.DisplayValues,
+            detailPageUrl: item.DetailPageURL
+          };
+        }) || [],
+        refinements: response.SearchResult.SearchRefinements
+      };
+
+    } catch (error: any) {
+      logError('搜索商品时发生错误', {
+        error: {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+          type: error.__type,
+          code: error.Code
+        },
+        params
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 带重试机制的SearchItems API调用
+   */
+  private async retryableSearchItems(parameters: any, retryCount = 3, initialDelay = 1000): Promise<any> {
+    for (let i = 0; i < retryCount; i++) {
+      try {
+        if (i > 0) {
+          const delayTime = initialDelay * Math.pow(2, i - 1);
+          console.log(`第${i + 1}次重试，等待${delayTime}ms...`);
+          await this.delay(delayTime);
+        }
+
+        const response = await amazonPaapi.SearchItems(this.commonParameters, parameters);
+
+        if (!response) {
+          throw new Error('API 返回空响应');
+        }
+
+        if (response.Errors) {
+          const errorDetails = response.Errors.map((error: any) => ({
+            code: error.Code,
+            message: error.Message,
+            type: error.__type
+          }));
+          throw new Error(`API 返回错误: ${JSON.stringify(errorDetails)}`);
+        }
+
+        return response;
+
+      } catch (error: any) {
+        console.error('SearchItems API 调用错误:', {
+          attempt: i + 1,
+          error: {
+            name: error.name,
+            message: error.message,
+            type: error.__type,
+            code: error.Code
+          },
+          request: {
+            keywords: parameters.Keywords,
+            searchIndex: parameters.SearchIndex,
+            itemCount: parameters.ItemCount
+          }
+        });
+
+        if (i === retryCount - 1) {
+          throw error;
+        }
+
+        if (error?.response?.status !== 429) {
+          throw error;
+        }
+
+        console.log(`请求被限流，准备第${i + 1}次重试...`);
+      }
+    }
   }
 } 

@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express';
-import { AmazonService, ProductInfo } from '../services/amazon.service';
+import { AmazonService } from '../services/amazon.service';
 import { AppError } from '../middlewares/error.middleware';
-import { logInfo } from '../utils/logger';
+import { logError, logInfo } from '../utils/logger';
 
 interface AmazonServiceResponse {
   asin: string;
@@ -12,172 +12,67 @@ interface AmazonServiceResponse {
     amount?: number;
     currency?: string;
     displayAmount?: string;
-    pricePerUnit?: {
-      amount?: number;
-      currency?: string;
-      displayAmount?: string;
-    };
-    savingBasis?: {
-      amount?: number;
-      currency?: string;
-      displayAmount?: string;
-      savingBasisType?: string;
-      savingBasisTypeLabel?: string;
-    };
     savings?: {
       amount?: number;
       currency?: string;
       displayAmount?: string;
       percentage?: number;
     };
-    loyaltyPoints?: {
-      points?: number;
+    originalPrice?: {
+      amount?: number;
+      displayAmount?: string;
     };
   };
-  condition?: {
-    value?: string;
-    subCondition?: string;
-    conditionNote?: string;
-  };
-  merchantInfo?: {
-    name?: string;
-    id?: string;
-    feedbackCount?: number;
-    feedbackRating?: number;
-  };
-  deliveryInfo?: {
-    isAmazonFulfilled?: boolean;
-    isFreeShippingEligible?: boolean;
-    isPrimeEligible?: boolean;
-  };
-  programEligibility?: {
-    isPrimeExclusive?: boolean;
-    isPrimePantry?: boolean;
-  };
-  offerSummary?: {
-    condition?: string;
-    lowestPrice?: string;
-    highestPrice?: string;
-    offerCount?: number;
-  };
-  availability?: {
+  dealInfo?: {
     type?: string;
-    message?: string;
-    maxOrderQuantity?: number;
-    minOrderQuantity?: number;
-  };
-  dealDetails?: {
-    accessType?: string;
-    endTime?: string;
     startTime?: string;
+    endTime?: string;
     percentClaimed?: number;
   };
-  isBuyBoxWinner?: boolean;
-  violatesMAP?: boolean;
+  isPrimeEligible?: boolean;
+  features?: string[];
+  detailPageUrl?: string;
 }
 
-interface FormattedProduct {
-  asin: string;
-  title: string;
-  image: string;
-  price: string;
-  priceDetails?: {
-    amount?: number;
-    currency?: string;
-    displayAmount?: string;
-    pricePerUnit?: {
-      amount?: number;
-      currency?: string;
-      displayAmount?: string;
-    };
-    savingBasis?: {
-      amount?: number;
-      currency?: string;
-      displayAmount?: string;
-      savingBasisType?: string;
-      savingBasisTypeLabel?: string;
-    };
-    savings?: {
-      amount?: number;
-      currency?: string;
-      displayAmount?: string;
-      percentage?: number;
-    };
-    loyaltyPoints?: {
-      points?: number;
-    };
-  };
-  condition?: {
-    value?: string;
-    subCondition?: string;
-    conditionNote?: string;
-  };
-  merchantInfo?: {
-    name?: string;
-    id?: string;
-    feedbackCount?: number;
-    feedbackRating?: number;
-  };
-  deliveryInfo?: {
-    isAmazonFulfilled?: boolean;
-    isFreeShippingEligible?: boolean;
-    isPrimeEligible?: boolean;
-  };
-  programEligibility?: {
-    isPrimeExclusive?: boolean;
-    isPrimePantry?: boolean;
-  };
-  offerSummary?: {
-    condition?: string;
-    lowestPrice?: string;
-    highestPrice?: string;
-    offerCount?: number;
-  };
-  url: string;
-  availability?: {
-    type?: string;
-    message?: string;
-    maxOrderQuantity?: number;
-    minOrderQuantity?: number;
-  };
-  dealDetails?: {
-    accessType?: string;
-    endTime?: string;
-    startTime?: string;
-    percentClaimed?: number;
-  };
-  isBuyBoxWinner?: boolean;
-  violatesMAP?: boolean;
+interface SearchResult {
+  items: AmazonServiceResponse[];
+  totalResults: number;
+  searchUrl: string;
+  refinements?: any;
 }
 
 export class ProductController {
   private amazonService: AmazonService;
 
   constructor() {
-    this.amazonService = new AmazonService();
+    try {
+      this.amazonService = new AmazonService();
+    } catch (error) {
+      logError('Failed to initialize AmazonService', error);
+      throw error;
+    }
   }
 
   /**
    * 格式化商品数据
    */
-  private formatProduct(item: AmazonServiceResponse): FormattedProduct {
-    return {
-      asin: item.asin,
-      title: item.title || '未知商品',
-      image: item.image || '/images/no-image.png',
-      price: item.price || '暂无价格',
-      priceDetails: item.priceDetails,
-      url: `https://www.amazon.com/dp/${item.asin}`,
-      availability: item.availability,
-      dealDetails: item.dealDetails,
-      isBuyBoxWinner: item.isBuyBoxWinner,
-      condition: item.condition,
-      merchantInfo: item.merchantInfo,
-      deliveryInfo: item.deliveryInfo,
-      programEligibility: item.programEligibility,
-      offerSummary: item.offerSummary,
-      violatesMAP: item.violatesMAP
-    };
+  private formatProduct(item: AmazonServiceResponse) {
+    try {
+      return {
+        asin: item.asin,
+        title: item.title || '未知商品',
+        image: item.image || '/images/no-image.png',
+        price: item.price || '暂无价格',
+        priceDetails: item.priceDetails,
+        dealInfo: item.dealInfo,
+        isPrimeEligible: item.isPrimeEligible,
+        features: item.features,
+        detailPageUrl: item.detailPageUrl
+      };
+    } catch (error) {
+      logError('Failed to format product', { error, item });
+      throw new AppError('商品数据格式化失败', 500);
+    }
   }
 
   /**
@@ -192,27 +87,28 @@ export class ProductController {
       const { asin } = req.params;
 
       if (!asin) {
-        throw new AppError(req.t('errors.invalidRequest'), 400);
+        throw new AppError('缺少商品ASIN', 400);
       }
 
       logInfo('Getting product details', { asin });
       const items = await this.amazonService.getItemsByAsins([asin]);
 
-      if (!items.length) {
-        throw new AppError(req.t('errors.notFound'), 404);
+      if (!items?.length) {
+        throw new AppError('商品未找到', 404);
       }
 
       const formattedProduct = this.formatProduct(items[0]);
 
       res.json({
         status: 'success',
-        message: req.t('success.getProduct'),
+        message: '获取商品详情成功',
         data: {
           product: formattedProduct
         }
       });
-    } catch (error) {
-      next(error);
+    } catch (error: any) {
+      logError('获取商品详情失败', error);
+      next(new AppError(error.message || '获取商品详情失败', error.status || 500));
     }
   };
 
@@ -225,48 +121,119 @@ export class ProductController {
     next: NextFunction
   ) => {
     try {
-      logInfo('Scraping deals page');
-      const products = await this.amazonService.scrapeDealsPage();
+      logInfo('Searching for discounted items');
       
-      // 提取 ASIN 列表
-      const asinList = products.map(product => product.asin);
-      
-      logInfo('Getting items details', { asinCount: asinList.length });
-      const items = await this.amazonService.getItemsByAsins(asinList.slice(0, 10));
+      // 从查询参数中获取搜索选项
+      const {
+        searchIndex,
+        minSavingsPercent,
+        maxPrice,
+        sortBy,
+        itemCount,
+        itemPage,
+        dealTypes
+      } = req.query;
+
+      // 构建搜索参数
+      const searchParams = {
+        searchIndex: searchIndex as string,
+        minSavingsPercent: minSavingsPercent ? Number(minSavingsPercent) : undefined,
+        maxPrice: maxPrice ? Number(maxPrice) : undefined,
+        sortBy: sortBy as any,
+        itemCount: itemCount ? Number(itemCount) : undefined,
+        itemPage: itemPage ? Number(itemPage) : undefined,
+        dealTypes: dealTypes ? (dealTypes as string).split(',') as ('DealOfTheDay' | 'Lightning' | 'Promotion')[] : undefined
+      };
+
+      // 搜索折扣商品
+      const result = await this.amazonService.searchDiscountedItems(searchParams);
+
+      if (!result?.items) {
+        throw new AppError('未找到折扣商品', 404);
+      }
 
       // 格式化返回数据
-      const formattedProducts = items.map((item: AmazonServiceResponse) => this.formatProduct(item));
+      const formattedProducts = result.items.map((item: AmazonServiceResponse) => this.formatProduct(item));
 
       res.json({
         status: 'success',
-        message: req.t('success.search'),
+        message: '获取折扣商品成功',
         data: {
           products: formattedProducts,
-          total: formattedProducts.length
+          total: result.totalResults,
+          searchUrl: result.searchUrl,
+          refinements: result.refinements
         }
       });
-    } catch (error) {
-      next(error);
+    } catch (error: any) {
+      logError('获取折扣商品失败', error);
+      next(new AppError(error.message || '获取折扣商品失败', error.status || 500));
     }
   };
 
-  async getProductsByAsins(asinList: string[]) {
+  /**
+   * 搜索商品
+   */
+  searchProducts: RequestHandler = async (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
     try {
-      const items = await this.amazonService.getItemsByAsins(asinList.slice(0, 10)); // 限制最多10个商品
-      return items;
-    } catch (error) {
-      throw error;
-    }
-  }
+      const {
+        keywords,
+        searchIndex,
+        sortBy,
+        minPrice,
+        maxPrice,
+        minReviewsRating,
+        condition,
+        availability,
+        itemCount,
+        itemPage
+      } = req.query;
 
-  async getProducts(req: Request, res: Response, next: NextFunction) {
-    try {
-      const asinList = await this.amazonService.scrapeDealsPage();
-      const asins = asinList.map(product => product.asin);
-      const items = await this.getProductsByAsins(asins);
-      res.json(items);
-    } catch (error) {
-      next(error);
+      if (!keywords && !searchIndex) {
+        throw new AppError('请提供搜索关键词或分类', 400);
+      }
+
+      // 构建搜索参数
+      const searchParams = {
+        keywords: keywords as string,
+        searchIndex: searchIndex as string,
+        sortBy: sortBy as any,
+        minPrice: minPrice ? Number(minPrice) : undefined,
+        maxPrice: maxPrice ? Number(maxPrice) : undefined,
+        minReviewsRating: minReviewsRating ? Number(minReviewsRating) : undefined,
+        condition: condition as any,
+        availability: availability as any,
+        itemCount: itemCount ? Number(itemCount) : undefined,
+        itemPage: itemPage ? Number(itemPage) : undefined
+      };
+
+      // 搜索商品
+      const result = await this.amazonService.searchItems(searchParams);
+
+      if (!result?.items) {
+        throw new AppError('未找到相关商品', 404);
+      }
+
+      // 格式化返回数据
+      const formattedProducts = result.items.map((item: AmazonServiceResponse) => this.formatProduct(item));
+
+      res.json({
+        status: 'success',
+        message: '搜索成功',
+        data: {
+          products: formattedProducts,
+          total: result.totalResults,
+          searchUrl: result.searchUrl,
+          refinements: result.refinements
+        }
+      });
+    } catch (error: any) {
+      logError('搜索商品失败', error);
+      next(new AppError(error.message || '搜索商品失败', error.status || 500));
     }
-  }
+  };
 } 

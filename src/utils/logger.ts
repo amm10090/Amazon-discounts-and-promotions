@@ -46,7 +46,7 @@ if (config.server.env !== 'production') {
 
 // 导出日志记录方法
 export const logError = (message: string, error?: any) => {
-  logger.error(message, { error: error?.message || error });
+  logger.error(message, { error: error?.message || error, metadata: error });
 };
 
 export const logInfo = (message: string, data?: any) => {

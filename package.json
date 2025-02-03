@@ -4,11 +4,11 @@
   "description": "这是一个基于 Node.js 的 RESTful API 服务，用于获取亚马逊商品的折扣和优惠信息。该服务集成了 Amazon Product Advertising API 5.0，支持多语言，并提供了丰富的搜索和过滤功能。",
   "main": "dist/app.js",
   "scripts": {
-    "start": "node dist/app.js",
-    "dev": "node --loader ts-node/esm src/app.ts",
+    "start": "node --experimental-specifier-resolution=node dist/app.js",
+    "dev": "NODE_OPTIONS=\"--loader ts-node/esm\" ts-node-dev --respawn src/app.ts",
     "build": "tsc && copyfiles -u 1 \"src/public/**/*\" dist",
-    "test": "node --loader ts-node/esm src/test.ts",
-    "test:watch": "nodemon --exec node --loader ts-node/esm src/test.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix"
